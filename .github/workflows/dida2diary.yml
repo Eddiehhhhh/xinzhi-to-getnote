@@ -1,0 +1,41 @@
+name: "滴答任务自动关联到日记"
+
+on:
+  schedule:
+    # 每天早上8点执行 (UTC = 北京时间16点)
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    # 允许手动触发
+    inputs:
+      target_date:
+        description: "目标日期 (YYYY-MM-DD)"
+        required: false
+        default: ""
+
+jobs:
+  link-tasks:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: Install dependencies
+        run: pip install requests -q
+      
+      - name: Run linking script
+        env:
+          TARGET_DATE: ${{ github.event.inputs.target_date || 'yesterday' }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          DIDA_TOKEN: ${{ secrets.DIDA_TOKEN }}
+        run: |
+          if [ "$TARGET_DATE" = "yesterday" ]; then
+            TARGET_DATE=$(date -d "yesterday" +%Y-%m-%d)
+          fi
+          echo "处理日期: $TARGET_DATE"
+          python3 dida2diary_linker.py "$TARGET_DATE" run
