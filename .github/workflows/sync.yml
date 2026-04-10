@@ -31,3 +31,11 @@ jobs:
         env:
           XINZHI_TOKEN: ${{ secrets.XINZHI_TOKEN }}
           GETNOTE_API_KEY: ${{ secrets.GETNOTE_API_KEY }}
+          GETNOTE_CLIENT_ID: ${{ secrets.GETNOTE_CLIENT_ID }}
+
+      - name: Commit processed IDs
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add processed_ids.json 2>/dev/null || true
+          git diff --quiet && true || git commit -m "chore: 更新已处理记录" && git push origin main || echo "无需提交"
