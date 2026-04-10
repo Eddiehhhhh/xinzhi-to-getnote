@@ -68,9 +68,9 @@ async function fetchXinzhiNotes(pageIndex = 1, pageSize = 50) {
     path: `/api/v1/notes?pageIndex=${pageIndex}&pageSize=${pageSize}`,
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${XINZHI_TOKEN}`,
       'Content-Type': 'application/json',
-      'x-request-source': 'xinzhi-cli'  // CLI 需要的请求头
+      'X-CLI-Token': XINZHI_TOKEN,  // CLI 使用 X-CLI-Token 请求头
+      'x-client': 'CLI'
     }
   };
   return httpRequest(options);
@@ -83,9 +83,9 @@ async function deleteXinzhiNote(noteId) {
     path: `/api/v1/notes/${noteId}`,
     method: 'DELETE',
     headers: {
-      'Authorization': `Bearer ${XINZHI_TOKEN}`,
       'Content-Type': 'application/json',
-      'x-request-source': 'xinzhi-cli'
+      'X-CLI-Token': XINZHI_TOKEN,
+      'x-client': 'CLI'
     }
   };
   return httpRequest(options);
@@ -156,13 +156,13 @@ async function main() {
   console.log('📡 正在获取新枝笔记列表...');
   const notesResponse = await fetchXinzhiNotes();
 
-  if (!notesResponse.success || !notesResponse.data) {
-    console.log('❌ 获取笔记失败:', JSON.stringify(notesResponse));
+  if (!notesResponse || !notesResponse.list) {
+    console.log('❌ 获取笔记失败或返回格式异常:', JSON.stringify(notesResponse).substring(0, 200));
     return;
   }
 
-  const notes = notesResponse.data.list || [];
-  console.log(`📦 获取到 ${notes.length} 条笔记，总计: ${notesResponse.data.total}`);
+  const notes = notesResponse.list || [];
+  console.log(`📦 获取到 ${notes.length} 条笔记，总计: ${notesResponse.total}`);
 
   // 筛选小红书链接
   const xiaohongshuNotes = notes.filter(note => {
@@ -210,18 +210,18 @@ async function main() {
           console.log('   ⚠️ Get笔记处理超时，但继续删除新枝记录');
         }
       } else {
-        console.log('   ⚠️ Get笔记保存结果异常:', JSON.stringify(saveResult));
+        console.log('   ⚠️ Get笔记保存结果异常:', JSON.stringify(saveResult).substring(0, 200));
       }
 
       // 3. 删除新枝记录
       console.log('   🗑️ 删除新枝记录...');
       const deleteResult = await deleteXinzhiNote(note.id);
 
-      if (deleteResult.success || deleteResult.code === 0) {
+      if (deleteResult === '' || deleteResult.success || deleteResult.code === 0) {
         console.log('   ✅ 新枝记录已删除');
         processedIds.add(note.id);
       } else {
-        console.log('   ⚠️ 删除失败（可能已删除）:', JSON.stringify(deleteResult));
+        console.log('   ⚠️ 删除结果:', JSON.stringify(deleteResult).substring(0, 200));
         // 仍标记为已处理，避免重复尝试
         processedIds.add(note.id);
       }
