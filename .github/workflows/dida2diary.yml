@@ -15,6 +15,10 @@ on:
 jobs:
   link-tasks:
     runs-on: ubuntu-latest
+    # 设置时区为 Asia/Shanghai (北京时间 UTC+8)
+    # 这样 date 命令和 cron 都使用北京时间
+    env:
+      TZ: Asia/Shanghai
     
     steps:
       - name: Checkout code
@@ -30,12 +34,13 @@ jobs:
       
       - name: Run linking script
         env:
-          TARGET_DATE: ${{ github.event.inputs.target_date || 'yesterday' }}
+          TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           DIDA_TOKEN: ${{ secrets.DIDA_TOKEN }}
         run: |
-          if [ "$TARGET_DATE" = "yesterday" ]; then
+          # 使用北京时间计算昨天
+          if [ -z "$TARGET_DATE" ]; then
             TARGET_DATE=$(date -d "yesterday" +%Y-%m-%d)
           fi
-          echo "处理日期: $TARGET_DATE"
+          echo "处理日期: $TARGET_DATE (北京时间)"
           python3 dida2diary_linker.py "$TARGET_DATE" run
