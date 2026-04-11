@@ -129,31 +129,14 @@ def get_dida_tasks_for_date(target_date: str) -> list:
     return matched_tasks
 
 
-def search_task_center_tasks(query: str, target_date: str = None) -> list:
+def search_task_center_tasks(query: str) -> list:
     """
     在任务中心搜索匹配的任务
-    按标题搜索，支持日期筛选
+    按标题搜索（不过滤日期，因为滴答和任务中心日期可能不同步）
     """
-    # 构建筛选条件
-    filter_obj = {
-        "property": "名称",
-        "rich_text": {
-            "contains": query
-        }
-    }
-    
     payload = {
-        "filter": filter_obj
+        "filter": {"property": "名称", "rich_text": {"contains": query}}
     }
-    
-    # 如果指定了日期，添加日期筛选
-    if target_date:
-        payload["filter"] = {
-            "and": [
-                {"property": "名称", "rich_text": {"contains": query}},
-                {"property": "日期", "date": {"equals": target_date}}
-            ]
-        }
     
     url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query"
     response = requests.post(url, headers=NOTION_HEADERS, json=payload)
@@ -313,14 +296,11 @@ def link_dida_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
         task_title = dida_task["title"]
         
         # 在任务中心搜索
-        matched = search_task_center_tasks(task_title, target_date)
+        matched = search_task_center_tasks(task_title)
         
         if not matched:
-            # 如果精确匹配没找到，尝试模糊匹配（只看标题）
+            # 尝试模糊匹配
             matched = search_task_center_tasks(task_title)
-            # 筛选日期最接近的
-            if matched:
-                matched = [m for m in matched if m.get("date") == target_date]
         
         if not matched:
             print(f"   ⚠️  {task_title}: 在任务中心未找到匹配")
