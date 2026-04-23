@@ -132,10 +132,10 @@ def get_dida_tasks_for_date(target_date: str) -> list:
 def search_task_center_tasks(query: str) -> list:
     """
     在任务中心搜索匹配的任务
-    按标题搜索（不过滤日期，因为滴答和任务中心日期可能不同步）
+    使用 title equals 精确匹配，防止"健身"等通用标题匹配到历史所有同名任务
     """
     payload = {
-        "filter": {"property": "名称", "rich_text": {"contains": query}}
+        "filter": {"property": "名称", "title": {"equals": query.strip()}}
     }
     
     url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query"
@@ -294,39 +294,49 @@ def link_dida_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
     print(f"\n🔗 匹配任务中心记录...")
     for dida_task in dida_tasks:
         task_title = dida_task["title"]
+        dida_due = dida_task.get("dueDate") or dida_task.get("startDate") or target_date
         
-        # 在任务中心搜索
+        # 在任务中心精确搜索
         matched = search_task_center_tasks(task_title)
-        
-        if not matched:
-            # 尝试模糊匹配
-            matched = search_task_center_tasks(task_title)
         
         if not matched:
             print(f"   ⚠️  {task_title}: 在任务中心未找到匹配")
             results["failed"].append(task_title)
             continue
         
-        # 找到匹配的任务
-        for task in matched:
-            task_id = task["id"]
-            
-            if task_id in existing_ids:
-                print(f"   ✅ {task_title}: 已关联")
-                results["already_linked"].append(task["title"])
+        # 如果有多条同名任务，选日期最接近目标日期的一条
+        if len(matched) > 1:
+            def date_distance(t):
+                d = t.get("date", "")
+                if not d:
+                    return 9999
+                try:
+                    return abs((datetime.strptime(d, "%Y-%m-%d") - datetime.strptime(dida_due, "%Y-%m-%d")).days)
+                except:
+                    return 9999
+            matched.sort(key=date_distance)
+            print(f"   ⚠️  {task_title}: 找到 {len(matched)} 条同名记录，选日期最近的一条 (日期: {matched[0].get('date', '无')})")
+        
+        # 只关联最匹配的一条
+        task = matched[0]
+        task_id = task["id"]
+        
+        if task_id in existing_ids:
+            print(f"   ✅ {task_title}: 已关联")
+            results["already_linked"].append(task["title"])
+        else:
+            if dry_run:
+                print(f"   🔄 {task_title}: 将关联 (dry_run)")
+                results["newly_linked"].append(task["title"])
             else:
-                if dry_run:
-                    print(f"   🔄 {task_title}: 将关联 (dry_run)")
+                if add_event_relation(diary_id, task_id):
+                    print(f"   ✅ {task_title}: 关联成功")
                     results["newly_linked"].append(task["title"])
                 else:
-                    if add_event_relation(diary_id, task_id):
-                        print(f"   ✅ {task_title}: 关联成功")
-                        results["newly_linked"].append(task["title"])
-                    else:
-                        print(f"   ❌ {task_title}: 关联失败")
-                        results["failed"].append(task["title"])
-            
-            results["matched_tasks"].append(task)
+                    print(f"   ❌ {task_title}: 关联失败")
+                    results["failed"].append(task["title"])
+        
+        results["matched_tasks"].append(task)
     
     # 5. 汇总
     print(f"\n{'='*60}")

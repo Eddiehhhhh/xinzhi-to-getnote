@@ -373,19 +373,8 @@ def sync_dida_to_notion(target_date: str, dry_run: bool = True) -> dict:
         matched = search_notion_task(title)
         
         if not matched:
-            # 任务中心没有，创建新任务
-            date_display = f"{start_date}~{due_date}" if (start_date and due_date and start_date != due_date) else (due_date or start_date)
-            if dry_run:
-                print(f"   🔄 [{list_name}] {title} [{date_display}]: 将创建")
-                results["created"].append(title)
-            else:
-                new_id = create_notion_task(title, start_date, due_date, list_page_id)
-                if new_id:
-                    print(f"   ✅ [{list_name}] {title}: 创建成功")
-                    results["created"].append(title)
-                else:
-                    print(f"   ❌ [{list_name}] {title}: 创建失败")
-                    results["failed"].append(title)
+            # 任务中心没有，直接跳过（不新建）
+            print(f"   ⏭️  [{list_name}] {title}: 任务中心不存在，跳过")
         else:
             # 任务中心已存在，检查日期和清单
             matched_task = matched[0]
