@@ -1,48 +1,48 @@
-name: "滴答任务自动关联到日记"
+name: "关联任务到日记中心"
 
 on:
   schedule:
     # 每天下午4点执行 (UTC 8:00 = 北京时间16:00)
     - cron: "0 8 * * *"
-    # 每天晚上23:30执行 (UTC 15:30 = 北京时间23:30)
+    # 每天晚上11:30执行 (UTC 15:30 = 北京时间23:30)
     - cron: "30 15 * * *"
   workflow_dispatch:
-    # 允许手动触发
     inputs:
       target_date:
         description: "目标日期 (YYYY-MM-DD)"
         required: false
         default: ""
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   link-tasks:
     runs-on: ubuntu-latest
-    # 设置时区为 Asia/Shanghai (北京时间 UTC+8)
-    # 这样 date 命令和 cron 都使用北京时间
     env:
       TZ: Asia/Shanghai
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      
+
       - name: Install dependencies
         run: pip install requests -q
-      
-      - name: Run linking script
+
+      - name: 关联任务到日记
         env:
           TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           DIDA_TOKEN: ${{ secrets.DIDA_TOKEN }}
         run: |
-          # 使用北京时间计算今天（处理当天的任务）
           if [ -z "$TARGET_DATE" ]; then
             TARGET_DATE=$(date +%Y-%m-%d)
           fi
-          echo "处理日期: $TARGET_DATE (北京时间)"
-          python3 dida2diary_linker.py "$TARGET_DATE" run
+          echo "📅 步骤2：关联任务到日记 — 日期: $TARGET_DATE (北京时间)"
+          python3 link_tasks_to_diary.py "$TARGET_DATE" run
