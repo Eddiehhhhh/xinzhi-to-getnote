@@ -135,16 +135,33 @@ def get_all_tasks_without_list() -> list:
     return tasks
 
 
-def search_dida_by_title(title: str) -> str:
+def search_dida_by_title_and_date(title: str, target_date: str) -> str:
     """
-    在滴答所有清单中搜索同名任务，返回匹配任务的 projectId
+    在滴答所有清单中搜索同名+同日期的任务，返回匹配任务的 projectId
+    日期匹配：任务的开始/截止日期在目标日期，或日期范围包含目标日期
     """
+    def matches_date(task):
+        due_date = task.get("dueDate", "")[:10] if task.get("dueDate") else ""
+        start_date = task.get("startDate", "")[:10] if task.get("startDate") else ""
+        if due_date == target_date or start_date == target_date:
+            return True
+        if start_date and due_date:
+            try:
+                s = datetime.strptime(start_date, "%Y-%m-%d")
+                e = datetime.strptime(due_date, "%Y-%m-%d")
+                t = datetime.strptime(target_date, "%Y-%m-%d")
+                if s <= t <= e:
+                    return True
+            except:
+                pass
+        return False
+
     # 先查收集箱
     inbox_url = f"{DIDA_BASE}/open/v1/project/inbox/data"
     resp = requests.get(inbox_url, headers=DIDA_HEADERS)
     if resp.status_code == 200:
         for t in resp.json().get("tasks", []):
-            if t.get("title", "").strip() == title:
+            if t.get("title", "").strip() == title and matches_date(t):
                 return "inbox"
 
     # 再查各清单
@@ -153,7 +170,7 @@ def search_dida_by_title(title: str) -> str:
         resp = requests.get(url, headers=DIDA_HEADERS)
         if resp.status_code == 200:
             for t in resp.json().get("tasks", []):
-                if t.get("title", "").strip() == title:
+                if t.get("title", "").strip() == title and matches_date(t):
                     return project_id
 
     return None
@@ -213,8 +230,8 @@ def fix_list_relations(dry_run: bool = True) -> dict:
         task_id = task["id"]
         date_str = task.get("date", "")
 
-        # 去滴答搜索同名任务
-        project_id = search_dida_by_title(title)
+        # 去滴答搜索同名+同日期任务
+        project_id = search_dida_by_title_and_date(title, date_str)
 
         if not project_id:
             print(f"   ⏭️  [{title}] [{date_str}]: 滴答中未找到，跳过")
