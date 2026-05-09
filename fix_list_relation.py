@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-步骤1：修复任务中心清单关联
-功能：查询任务中心所有没有清单关联的任务，按标题去滴答匹配，补充清单关联
+步骤1：修复任务中心清单关联（优化版）
+功能：一次性拉取所有滴答任务建立本地索引，批量匹配任务中心的任务并更新清单关联
 
 流程：
-1. 查询任务中心所有没有清单关联的任务
-2. 对每个任务，去滴答所有清单中搜索同名任务
-3. 找到后根据滴答 projectId 映射到清单中心页面，更新任务中心的清单关联
+1. 一次性拉取滴答全部任务（收集箱 + 所有清单）
+2. 查询任务中心所有没有清单关联的任务
+3. 本地精确匹配（标题 + 日期），找到对应 project_id
+4. 根据 project_id 映射到清单中心页面，更新任务中心
 """
 
 import requests
@@ -52,16 +53,105 @@ PROJECT_IDS = {
     "购物": "6309c13dd063d1013009fb4e",
 }
 
-# ============== 清单中心映射 ==============
-_LIST_CACHE = None
+# ============== 滴答任务缓存 ==============
+_ALL_DIDA_TASKS = None  # 全局缓存：一次性拉取的全部滴答任务
 
+
+def fetch_all_dida_tasks(force_reload: bool = False) -> list:
+    """
+    一次性拉取所有滴答任务（收集箱 + 所有清单），
+    建立本地索引列表，后续匹配全部在内存中完成。
+    返回：[ {"title", "startDate", "dueDate", "_project_id"}, ... ]
+    """
+    global _ALL_DIDA_TASKS
+    if _ALL_DIDA_TASKS is not None and not force_reload:
+        return _ALL_DIDA_TASKS
+
+    all_tasks = []
+    print("   📡 拉取滴答收集箱...", end=" ")
+    try:
+        resp = requests.get(
+            f"{DIDA_BASE}/open/v1/project/inbox/data",
+            headers=DIDA_HEADERS,
+            timeout=(10, 60)
+        )
+        if resp.status_code == 200:
+            for t in resp.json().get("tasks", []):
+                t["_project_id"] = "inbox"
+                all_tasks.append(t)
+            print(f"✅ {len(resp.json().get('tasks', []))} 条")
+        else:
+            print(f"❌ HTTP {resp.status_code}")
+    except requests.exceptions.Timeout:
+        print("⚠️ 超时")
+    except Exception as e:
+        print(f"❌ {e}")
+
+    for project_name, project_id in PROJECT_IDS.items():
+        print(f"   📡 拉取清单 [{project_name}]...", end=" ")
+        try:
+            resp = requests.get(
+                f"{DIDA_BASE}/open/v1/project/{project_id}/data",
+                headers=DIDA_HEADERS,
+                timeout=(10, 60)
+            )
+            if resp.status_code == 200:
+                tasks = resp.json().get("tasks", [])
+                for t in tasks:
+                    t["_project_id"] = project_id
+                    all_tasks.append(t)
+                print(f"✅ {len(tasks)} 条")
+            else:
+                print(f"❌ HTTP {resp.status_code}")
+        except requests.exceptions.Timeout:
+            print("⚠️ 超时，跳过")
+        except Exception as e:
+            print(f"❌ {e}，跳过")
+
+    _ALL_DIDA_TASKS = all_tasks
+    print(f"   📊 滴答任务总计: {len(all_tasks)} 条")
+    return all_tasks
+
+
+def find_project_id_in_cache(title: str, target_date: str, all_tasks: list) -> str:
+    """
+    在本地缓存中按（标题 + 日期）精确匹配，返回 project_id。
+    日期匹配规则：
+      1. dueDate == target_date 或 startDate == target_date
+      2. startDate <= target_date <= dueDate（区间覆盖）
+    """
+    if not target_date:
+        return None
+
+    for t in all_tasks:
+        if t.get("title", "").strip() != title:
+            continue
+
+        due_date = t.get("dueDate", "")[:10] if t.get("dueDate") else ""
+        start_date = t.get("startDate", "")[:10] if t.get("startDate") else ""
+
+        # 精确日期匹配
+        if due_date == target_date or start_date == target_date:
+            return t["_project_id"]
+
+        # 日期区间覆盖匹配
+        if start_date and due_date:
+            try:
+                s = datetime.strptime(start_date, "%Y-%m-%d")
+                e = datetime.strptime(due_date, "%Y-%m-%d")
+                t_date = datetime.strptime(target_date, "%Y-%m-%d")
+                if s <= t_date <= e:
+                    return t["_project_id"]
+            except ValueError:
+                pass
+
+    return None
+
+
+# ============== Notion 操作 ==============
 
 def get_list_center_mapping() -> dict:
     """建立滴答 projectId -> 清单中心页面ID 的映射"""
-    global _LIST_CACHE
-    if _LIST_CACHE is not None:
-        return _LIST_CACHE
-
     mapping = {}
     url = f"https://api.notion.com/v1/databases/{LIST_DB_ID}/query"
     payload = {"page_size": 100}
@@ -69,7 +159,7 @@ def get_list_center_mapping() -> dict:
     while url:
         resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
         if resp.status_code != 200:
-            print(f"拉取清单中心失败: {resp.status_code}")
+            print(f"   拉取清单中心失败: {resp.status_code}，中断")
             break
 
         data = resp.json()
@@ -77,37 +167,34 @@ def get_list_center_mapping() -> dict:
             props = page.get("properties", {})
             id_data = props.get("id") or {}
             id_texts = id_data.get("rich_text") or []
-            dida_project_id = id_texts[0].get("plain_text", "") if id_texts else ""
+            dida_project_id = id_texts[0].get("plain_text", "").strip() if id_texts else ""
             if dida_project_id:
                 mapping[dida_project_id] = page["id"]
 
         next_cursor = data.get("next_cursor")
-        url = f"https://api.notion.com/v1/databases/{LIST_DB_ID}/query" if next_cursor else None
-        payload = {"page_size": 100, "start_cursor": next_cursor}
+        if next_cursor:
+            payload = {"page_size": 100, "start_cursor": next_cursor}
+            url = f"https://api.notion.com/v1/databases/{LIST_DB_ID}/query"
+        else:
+            url = None
 
-    _LIST_CACHE = mapping
     print(f"   清单中心映射: {len(mapping)} 个条目")
     return mapping
 
 
 def get_all_tasks_without_list() -> list:
-    """
-    查询任务中心所有没有清单关联的任务
-    """
+    """查询任务中心所有没有清单关联的任务"""
     tasks = []
     url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query"
     payload = {
-        "filter": {
-            "property": "清单",
-            "relation": {"is_empty": True}
-        },
+        "filter": {"property": "清单", "relation": {"is_empty": True}},
         "page_size": 100
     }
 
     while url:
         resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
         if resp.status_code != 200:
-            print(f"查询任务中心失败: {resp.status_code}")
+            print(f"   查询任务中心失败: {resp.status_code}，中断")
             break
 
         data = resp.json()
@@ -122,65 +209,16 @@ def get_all_tasks_without_list() -> list:
             date_str = date_obj.get("start", "")[:10] if date_obj.get("start") else ""
 
             if title:
-                tasks.append({
-                    "id": page["id"],
-                    "title": title,
-                    "date": date_str
-                })
+                tasks.append({"id": page["id"], "title": title, "date": date_str})
 
         next_cursor = data.get("next_cursor")
-        url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query" if next_cursor else None
-        payload = {"page_size": 100, "start_cursor": next_cursor}
+        if next_cursor:
+            payload = {"page_size": 100, "start_cursor": next_cursor}
+            url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query"
+        else:
+            url = None
 
     return tasks
-
-
-def search_dida_by_title_and_date(title: str, target_date: str) -> str:
-    """
-    在滴答所有清单中搜索同名+同日期的任务，返回匹配任务的 projectId
-    日期匹配：任务的开始/截止日期在目标日期，或日期范围包含目标日期
-    """
-    def matches_date(task):
-        due_date = task.get("dueDate", "")[:10] if task.get("dueDate") else ""
-        start_date = task.get("startDate", "")[:10] if task.get("startDate") else ""
-        if due_date == target_date or start_date == target_date:
-            return True
-        if start_date and due_date:
-            try:
-                s = datetime.strptime(start_date, "%Y-%m-%d")
-                e = datetime.strptime(due_date, "%Y-%m-%d")
-                t = datetime.strptime(target_date, "%Y-%m-%d")
-                if s <= t <= e:
-                    return True
-            except:
-                pass
-        return False
-
-    try:
-        # 先查收集箱
-        inbox_url = f"{DIDA_BASE}/open/v1/project/inbox/data"
-        resp = requests.get(inbox_url, headers=DIDA_HEADERS, timeout=(10, 60))
-        if resp.status_code == 200:
-            for t in resp.json().get("tasks", []):
-                if t.get("title", "").strip() == title and matches_date(t):
-                    return "inbox"
-
-        # 再查各清单
-        for project_name, project_id in PROJECT_IDS.items():
-            url = f"{DIDA_BASE}/open/v1/project/{project_id}/data"
-            resp = requests.get(url, headers=DIDA_HEADERS, timeout=(10, 60))
-            if resp.status_code == 200:
-                for t in resp.json().get("tasks", []):
-                    if t.get("title", "").strip() == title and matches_date(t):
-                        return project_id
-    except requests.exceptions.Timeout:
-        print(f"   ⚠️  [{title}] [{target_date}]: 滴答 API 超时，跳过")
-        return None
-    except Exception as e:
-        print(f"   ⚠️  [{title}] [{target_date}]: 滴答 API 错误: {e}，跳过")
-        return None
-
-    return None
 
 
 def update_task_list(page_id: str, list_page_id: str) -> bool:
@@ -203,6 +241,8 @@ def get_list_name(project_id: str) -> str:
     return "收集箱" if project_id == "inbox" else project_id
 
 
+# ============== 主流程 ==============
+
 def fix_list_relations(dry_run: bool = True) -> dict:
     """主函数：修复所有缺少清单关联的任务"""
     results = {
@@ -214,14 +254,18 @@ def fix_list_relations(dry_run: bool = True) -> dict:
     }
 
     print(f"\n{'='*60}")
-    print(f"🔧 步骤1：修复任务中心清单关联")
+    print("🔧 步骤1：修复任务中心清单关联")
     print(f"{'='*60}")
 
-    # 加载清单中心映射
+    # 1. 加载清单中心映射
     print(f"\n📂 加载清单中心映射...")
     list_mapping = get_list_center_mapping()
 
-    # 查询所有没有清单的任务
+    # 2. 一次性拉取所有滴答任务
+    print(f"\n📡 拉取滴答全部任务（仅此一次）...")
+    all_tasks = fetch_all_dida_tasks()
+
+    # 3. 查询任务中心无清单任务
     print(f"\n🔍 查询任务中心没有清单关联的任务...")
     tasks = get_all_tasks_without_list()
     results["total"] = len(tasks)
@@ -230,18 +274,18 @@ def fix_list_relations(dry_run: bool = True) -> dict:
     if not tasks:
         return results
 
-    # 遍历每个任务，去滴答匹配
-    print(f"\n🔄 匹配滴答清单...")
-    for task in tasks:
+    # 4. 本地匹配 + 更新
+    print(f"\n🔗 本地匹配并关联清单...")
+    for i, task in enumerate(tasks, 1):
         title = task["title"]
         task_id = task["id"]
         date_str = task.get("date", "")
 
-        # 去滴答搜索同名+同日期任务
-        project_id = search_dida_by_title_and_date(title, date_str)
+        # 本地缓存匹配
+        project_id = find_project_id_in_cache(title, date_str, all_tasks)
 
         if not project_id:
-            print(f"   ⏭️  [{title}] [{date_str}]: 滴答中未找到，跳过")
+            print(f"   [{i}/{len(tasks)}] ⏭️  [{title}] [{date_str}]: 滴答中未找到，跳过")
             results["not_found_in_dida"].append(title)
             continue
 
@@ -250,25 +294,25 @@ def fix_list_relations(dry_run: bool = True) -> dict:
         list_name = get_list_name(project_id)
 
         if not list_page_id:
-            print(f"   ⚠️  [{title}] [{date_str}]: 清单 [{list_name}] 在清单中心无映射，跳过")
+            print(f"   [{i}/{len(tasks)}] ⚠️  [{title}] [{date_str}]: 清单[{list_name}]在清单中心无映射，跳过")
             results["no_mapping"].append(f"{title} ({list_name})")
             continue
 
         # 更新清单关联
         if dry_run:
-            print(f"   🔄 [{title}] [{date_str}]: 清单设为 [{list_name}]")
+            print(f"   [{i}/{len(tasks)}] 🔄 [{title}] [{date_str}]: 清单设为[{list_name}] (dry_run)")
             results["fixed"].append(title)
         else:
             if update_task_list(task_id, list_page_id):
-                print(f"   ✅ [{title}] [{date_str}]: 清单设为 [{list_name}]")
+                print(f"   [{i}/{len(tasks)}] ✅ [{title}] [{date_str}]: 清单设为[{list_name}]")
                 results["fixed"].append(title)
             else:
-                print(f"   ❌ [{title}] [{date_str}]: 更新失败")
+                print(f"   [{i}/{len(tasks)}] ❌ [{title}] [{date_str}]: 更新失败")
                 results["failed"].append(title)
 
     # 汇总
     print(f"\n{'='*60}")
-    print(f"📊 执行结果汇总")
+    print("📊 执行结果汇总")
     print(f"{'='*60}")
     print(f"   无清单任务总数: {results['total']}")
     print(f"   修复成功: {len(results['fixed'])}")
@@ -277,7 +321,7 @@ def fix_list_relations(dry_run: bool = True) -> dict:
     print(f"   失败: {len(results['failed'])}")
 
     if dry_run:
-        print(f"\n⚠️  当前是模拟运行，如需实际执行请设置 dry_run=False")
+        print(f"\n⚠️  当前是模拟运行，如需实际执行请传递 dry_run=False")
 
     return results
 
@@ -287,6 +331,6 @@ if __name__ == "__main__":
     dry_run = True
     if len(sys.argv) > 1 and sys.argv[1].lower() == "run":
         dry_run = False
-    print(f"🤖 修复任务中心清单关联")
+    print("🤖 修复任务中心清单关联")
     print(f"   模式: {'模拟运行' if dry_run else '实际执行'}")
     fix_list_relations(dry_run=dry_run)
