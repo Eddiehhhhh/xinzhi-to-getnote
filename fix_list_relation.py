@@ -67,7 +67,7 @@ def get_list_center_mapping() -> dict:
     payload = {"page_size": 100}
 
     while url:
-        resp = requests.post(url, headers=NOTION_HEADERS, json=payload)
+        resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
         if resp.status_code != 200:
             print(f"拉取清单中心失败: {resp.status_code}")
             break
@@ -105,7 +105,7 @@ def get_all_tasks_without_list() -> list:
     }
 
     while url:
-        resp = requests.post(url, headers=NOTION_HEADERS, json=payload)
+        resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
         if resp.status_code != 200:
             print(f"查询任务中心失败: {resp.status_code}")
             break
@@ -156,22 +156,29 @@ def search_dida_by_title_and_date(title: str, target_date: str) -> str:
                 pass
         return False
 
-    # 先查收集箱
-    inbox_url = f"{DIDA_BASE}/open/v1/project/inbox/data"
-    resp = requests.get(inbox_url, headers=DIDA_HEADERS)
-    if resp.status_code == 200:
-        for t in resp.json().get("tasks", []):
-            if t.get("title", "").strip() == title and matches_date(t):
-                return "inbox"
-
-    # 再查各清单
-    for project_name, project_id in PROJECT_IDS.items():
-        url = f"{DIDA_BASE}/open/v1/project/{project_id}/data"
-        resp = requests.get(url, headers=DIDA_HEADERS)
+    try:
+        # 先查收集箱
+        inbox_url = f"{DIDA_BASE}/open/v1/project/inbox/data"
+        resp = requests.get(inbox_url, headers=DIDA_HEADERS, timeout=(10, 60))
         if resp.status_code == 200:
             for t in resp.json().get("tasks", []):
                 if t.get("title", "").strip() == title and matches_date(t):
-                    return project_id
+                    return "inbox"
+
+        # 再查各清单
+        for project_name, project_id in PROJECT_IDS.items():
+            url = f"{DIDA_BASE}/open/v1/project/{project_id}/data"
+            resp = requests.get(url, headers=DIDA_HEADERS, timeout=(10, 60))
+            if resp.status_code == 200:
+                for t in resp.json().get("tasks", []):
+                    if t.get("title", "").strip() == title and matches_date(t):
+                        return project_id
+    except requests.exceptions.Timeout:
+        print(f"   ⚠️  [{title}] [{target_date}]: 滴答 API 超时，跳过")
+        return None
+    except Exception as e:
+        print(f"   ⚠️  [{title}] [{target_date}]: 滴答 API 错误: {e}，跳过")
+        return None
 
     return None
 
@@ -184,7 +191,7 @@ def update_task_list(page_id: str, list_page_id: str) -> bool:
             "清单": {"relation": [{"id": list_page_id}]}
         }
     }
-    resp = requests.patch(url, headers=NOTION_HEADERS, json=payload)
+    resp = requests.patch(url, headers=NOTION_HEADERS, json=payload, timeout=30)
     return resp.status_code == 200
 
 

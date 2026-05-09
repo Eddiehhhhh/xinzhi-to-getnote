@@ -10,6 +10,7 @@
 """
 
 import requests
+import requests.exceptions
 from datetime import datetime, timedelta
 import os
 
@@ -62,16 +63,26 @@ def get_dida_tasks_for_date(target_date: str) -> list:
 
     # 获取收集箱
     inbox_url = f"{DIDA_BASE}/open/v1/project/inbox/data"
-    resp = requests.get(inbox_url, headers=DIDA_HEADERS)
-    if resp.status_code == 200:
-        all_tasks.extend(resp.json().get("tasks", []))
+    try:
+        resp = requests.get(inbox_url, headers=DIDA_HEADERS, timeout=(10, 60))
+        if resp.status_code == 200:
+            all_tasks.extend(resp.json().get("tasks", []))
+    except requests.exceptions.Timeout:
+        print(f"   ⚠️ 收集箱 API 超时，跳过")
+    except Exception as e:
+        print(f"   ⚠️ 收集箱 API 错误: {e}，跳过")
 
     # 获取所有清单
     for project_name, project_id in PROJECT_IDS.items():
         url = f"{DIDA_BASE}/open/v1/project/{project_id}/data"
-        resp = requests.get(url, headers=DIDA_HEADERS)
-        if resp.status_code == 200:
-            all_tasks.extend(resp.json().get("tasks", []))
+        try:
+            resp = requests.get(url, headers=DIDA_HEADERS, timeout=(10, 60))
+            if resp.status_code == 200:
+                all_tasks.extend(resp.json().get("tasks", []))
+        except requests.exceptions.Timeout:
+            print(f"   ⚠️ 清单[{project_name}] API 超时，跳过")
+        except Exception as e:
+            print(f"   ⚠️ 清单[{project_name}] API 错误: {e}，跳过")
 
     # 去重
     seen_ids = set()
@@ -129,7 +140,7 @@ def search_task_center(query: str, target_date: str) -> list:
     }
 
     url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query"
-    resp = requests.post(url, headers=NOTION_HEADERS, json=payload)
+    resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
 
     if resp.status_code != 200:
         print(f"搜索任务中心失败: {resp.status_code}")
@@ -156,7 +167,7 @@ def get_diary_entry(target_date: str) -> dict:
         "filter": {"property": "日期", "date": {"equals": target_date}},
         "page_size": 1
     }
-    resp = requests.post(url, headers=NOTION_HEADERS, json=payload)
+    resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
     if resp.status_code != 200:
         print(f"获取日记条目失败: {resp.status_code}")
         return None
@@ -166,7 +177,7 @@ def get_diary_entry(target_date: str) -> dict:
 
 def get_existing_relations(diary_page_id: str) -> set:
     """获取日记当前关联的任务ID集合"""
-    resp = requests.get(f"https://api.notion.com/v1/pages/{diary_page_id}", headers=NOTION_HEADERS)
+    resp = requests.get(f"https://api.notion.com/v1/pages/{diary_page_id}", headers=NOTION_HEADERS, timeout=30)
     if resp.status_code != 200:
         return set()
     props = resp.json().get("properties", {})
@@ -186,7 +197,7 @@ def add_task_relation(diary_page_id: str, task_id: str) -> bool:
             "事件与任务": {"relation": [{"id": rid} for rid in new_relations]}
         }
     }
-    resp = requests.patch(url, headers=NOTION_HEADERS, json=payload)
+    resp = requests.patch(url, headers=NOTION_HEADERS, json=payload, timeout=30)
     return resp.status_code == 200
 
 
