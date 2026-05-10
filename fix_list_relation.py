@@ -285,8 +285,8 @@ def fix_list_relations(dry_run: bool = True) -> dict:
         project_id = find_project_id_in_cache(title, date_str, all_tasks)
 
         if not project_id:
-            print(f"   [{i}/{len(tasks)}] ⏭️  [{title}] [{date_str}]: 滴答中未找到，跳过")
-            results["not_found_in_dida"].append(title)
+            print(f"   [{i}/{len(tasks)}] ⏭ 滴答中未找到，跳过")
+            results["not_found_in_dida"].append(task["id"])
             continue
 
         # 查找对应的清单中心页面ID
@@ -294,21 +294,22 @@ def fix_list_relations(dry_run: bool = True) -> dict:
         list_name = get_list_name(project_id)
 
         if not list_page_id:
-            print(f"   [{i}/{len(tasks)}] ⚠️  [{title}] [{date_str}]: 清单[{list_name}]在清单中心无映射，跳过")
-            results["no_mapping"].append(f"{title} ({list_name})")
+            print(f"   [{i}/{len(tasks)}] ⚠ 清单[{list_name}]在清单中心无映射，跳过")
+            results["no_mapping"].append(task["id"])
             continue
 
         # 更新清单关联
+        task_id = task["id"]
         if dry_run:
-            print(f"   [{i}/{len(tasks)}] 🔄 [{title}] [{date_str}]: 清单设为[{list_name}] (dry_run)")
-            results["fixed"].append(title)
+            print(f"   [{i}/{len(tasks)}] 🔄 清单设为[{list_name}] (dry_run)")
+            results["fixed"].append(task_id)
         else:
             if update_task_list(task_id, list_page_id):
-                print(f"   [{i}/{len(tasks)}] ✅ [{title}] [{date_str}]: 清单设为[{list_name}]")
-                results["fixed"].append(title)
+                print(f"   [{i}/{len(tasks)}] ✅ 清单设为[{list_name}]")
+                results["fixed"].append(task_id)
             else:
-                print(f"   [{i}/{len(tasks)}] ❌ [{title}] [{date_str}]: 更新失败")
-                results["failed"].append(title)
+                print(f"   [{i}/{len(tasks)}] ❌ 更新失败")
+                results["failed"].append(task_id)
 
     # 汇总
     print(f"\n{'='*60}")

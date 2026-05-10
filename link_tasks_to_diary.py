@@ -220,9 +220,7 @@ def link_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
     print(f"\n📋 获取滴答当天任务...")
     dida_tasks = get_dida_tasks_for_date(target_date)
     results["dida_tasks"] = dida_tasks
-    print(f"   找到 {len(dida_tasks)} 个滴答任务:")
-    for t in dida_tasks:
-        print(f"   - {t['title']}")
+    print(f"   找到 {len(dida_tasks)} 个滴答任务（详情已隐藏）")
 
     if not dida_tasks:
         return results
@@ -248,27 +246,27 @@ def link_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
         matched = search_task_center(title, match_date)
 
         if not matched:
-            print(f"   ⚠️  {title}: 任务中心未找到匹配（日期: {match_date}）")
-            results["not_found"].append(title)
+            print(f"   ⚠ 任务中心未找到匹配（日期: {match_date}）")
+            results["not_found"].append(dida_task.get("id", ""))
             continue
 
         task = matched[0]
         task_id = task["id"]
 
         if task_id in existing_ids:
-            print(f"   ✅ {title}: 已关联")
-            results["already_linked"].append(title)
+            print(f"   ✅ 已关联")
+            results["already_linked"].append(task_id)
         else:
             if dry_run:
-                print(f"   🔄 {title}: 将关联 (dry_run)")
-                results["newly_linked"].append(title)
+                print(f"   🔄 将关联 (dry_run)")
+                results["newly_linked"].append(task_id)
             else:
                 if add_task_relation(diary_id, task_id):
-                    print(f"   ✅ {title}: 关联成功")
-                    results["newly_linked"].append(title)
+                    print(f"   ✅ 关联成功")
+                    results["newly_linked"].append(task_id)
                 else:
-                    print(f"   ❌ {title}: 关联失败")
-                    results["failed"].append(title)
+                    print(f"   ❌ 关联失败")
+                    results["failed"].append(task_id)
 
     # 4. 汇总
     print(f"\n{'='*60}")
