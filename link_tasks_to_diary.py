@@ -13,6 +13,7 @@ import requests
 import requests.exceptions
 from datetime import datetime, timedelta
 import os
+from typing import Optional
 
 # ============== 配置 ==============
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
@@ -124,20 +125,35 @@ def get_dida_tasks_for_date(target_date: str) -> list:
     return matched_tasks
 
 
-def search_task_center(query: str, target_date: str) -> list:
+def date_in_range(date_str: str, start_date: str, due_date: str) -> bool:
+    """判断某个日期是否落在滴答任务的开始/截止区间内。"""
+    if not date_str or not start_date or not due_date:
+        return False
+    try:
+        current = datetime.strptime(date_str, "%Y-%m-%d")
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        due = datetime.strptime(due_date, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return start <= current <= due
+
+
+def search_task_center(query: str, target_date: Optional[str]) -> list:
     """
-    在任务中心搜索任务（标题 + 日期双重精确匹配）
+    在任务中心搜索任务
+    - 传入日期时：标题 + 日期双重精确匹配
+    - 不传日期时：只按标题匹配，用于诊断日期不一致
     """
-    payload = {
-        "filter": {
-            "and": [
-                {"property": "名称", "title": {"equals": query.strip()}},
+    filters = [{"property": "名称", "title": {"equals": query.strip()}}]
+    if target_date:
+        filters.extend(
+            [
                 {"property": "日期", "date": {"on_or_before": target_date}},
-                {"property": "日期", "date": {"on_or_after": target_date}}
+                {"property": "日期", "date": {"on_or_after": target_date}},
             ]
-        },
-        "page_size": 100
-    }
+        )
+
+    payload = {"filter": {"and": filters}, "page_size": 100}
 
     url = f"https://api.notion.com/v1/databases/{TASK_DB_ID}/query"
     resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
@@ -175,6 +191,23 @@ def get_diary_entry(target_date: str) -> dict:
     return results[0] if results else None
 
 
+def create_diary_entry(target_date: str) -> Optional[dict]:
+    """在日记中心创建指定日期的条目。"""
+    url = "https://api.notion.com/v1/pages"
+    payload = {
+        "parent": {"database_id": DIARY_DB_ID},
+        "properties": {
+            "名称": {"title": [{"text": {"content": f"{target_date} "}}]},
+            "日期": {"date": {"start": target_date}},
+        },
+    }
+    resp = requests.post(url, headers=NOTION_HEADERS, json=payload, timeout=30)
+    if resp.status_code != 200:
+        print(f"创建日记条目失败: {resp.status_code}")
+        return None
+    return resp.json()
+
+
 def get_existing_relations(diary_page_id: str) -> set:
     """获取日记当前关联的任务ID集合"""
     resp = requests.get(f"https://api.notion.com/v1/pages/{diary_page_id}", headers=NOTION_HEADERS, timeout=30)
@@ -205,9 +238,12 @@ def link_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
     """主函数：将滴答任务关联到日记中心"""
     results = {
         "date": target_date,
+        "diary_created": False,
         "dida_tasks": [],
         "already_linked": [],
         "newly_linked": [],
+        "range_fallback_linked": [],
+        "title_only_mismatch": [],
         "not_found": [],
         "failed": []
     }
@@ -229,8 +265,16 @@ def link_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
     print(f"\n📓 获取日记条目...")
     diary = get_diary_entry(target_date)
     if not diary:
-        print(f"   未找到日期为 {target_date} 的日记条目，退出")
-        return results
+        if dry_run:
+            print(f"   未找到日期为 {target_date} 的日记条目（dry_run 不自动创建），退出")
+            return results
+        print(f"   未找到日期为 {target_date} 的日记条目，准备自动创建")
+        diary = create_diary_entry(target_date)
+        if not diary:
+            print(f"   自动创建失败，退出")
+            return results
+        results["diary_created"] = True
+        print(f"   已自动创建日记条目")
 
     diary_id = diary["id"]
     existing_ids = get_existing_relations(diary_id)
@@ -246,8 +290,24 @@ def link_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
         matched = search_task_center(title, match_date)
 
         if not matched:
-            print(f"   ⚠ 任务中心未找到匹配（日期: {match_date}）")
-            results["not_found"].append(dida_task.get("id", ""))
+            all_title_matches = search_task_center(title, target_date=None)
+            if (
+                len(all_title_matches) == 1
+                and date_in_range(
+                    all_title_matches[0].get("date", ""),
+                    dida_task.get("startDate", ""),
+                    dida_task.get("dueDate", ""),
+                )
+            ):
+                matched = all_title_matches
+                print(f"   ↪ 使用标题 + 区间回退匹配")
+                results["range_fallback_linked"].append(all_title_matches[0]["id"])
+            elif all_title_matches:
+                print(f"   ⚠ 任务中心存在同标题记录，但日期不一致（日期: {match_date}）")
+                results["title_only_mismatch"].append(dida_task.get("id", ""))
+            else:
+                print(f"   ⚠ 任务中心未找到匹配（日期: {match_date}）")
+                results["not_found"].append(dida_task.get("id", ""))
             continue
 
         task = matched[0]
@@ -273,8 +333,11 @@ def link_tasks_to_diary(target_date: str, dry_run: bool = True) -> dict:
     print(f"📊 执行结果汇总")
     print(f"{'='*60}")
     print(f"   滴答任务数: {len(dida_tasks)}")
+    print(f"   自动创建日记: {'是' if results['diary_created'] else '否'}")
     print(f"   已有关联: {len(results['already_linked'])}")
     print(f"   新增关联: {len(results['newly_linked'])}")
+    print(f"   区间回退命中: {len(results['range_fallback_linked'])}")
+    print(f"   标题命中但日期不符: {len(results['title_only_mismatch'])}")
     print(f"   未找到: {len(results['not_found'])}")
     print(f"   失败: {len(results['failed'])}")
 
